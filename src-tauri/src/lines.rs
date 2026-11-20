@@ -30,6 +30,9 @@ const FALLBACK_SUBS: [&str; 18] = [
 /// 单条线路探测超时
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// 启动自检的单条探测超时：压短，避免首次开屏等太久。
+const BOOT_PROBE_TIMEOUT: Duration = Duration::from_millis(2500);
+
 pub fn fixed() -> Value {
     json!(FIXED
         .iter()
@@ -116,6 +119,42 @@ async fn fetch_mirrors() -> Result<Value, String> {
     }
 
     Ok(json!({ "source": PUBLISH_PAGE, "script": js_url, "items": items }))
+}
+
+/// 启动自检用：并发探测固定线路 + 前几条内置镜像，返回第一条可达线路。
+///
+/// 顺序即优先级（固定线路在前），整体耗时上限约等于 [`BOOT_PROBE_TIMEOUT`]。
+/// 只在首次启动时由 `crate::net::auto_pick_line` 调用。
+pub async fn pick_reachable() -> Option<String> {
+    let mut cands: Vec<String> = FIXED.iter().map(|(_, u)| (*u).to_string()).collect();
+    for item in builtin_mirrors().iter().take(10) {
+        if let Some(u) = item.get("url").and_then(|v| v.as_str()) {
+            cands.push(u.to_string());
+        }
+    }
+
+    let mut handles = Vec::new();
+    for (idx, url) in cands.into_iter().enumerate() {
+        let probe = url.clone();
+        handles.push((idx, url, tokio::spawn(async move { reachable(probe).await })));
+    }
+
+    let mut hits: Vec<(usize, String)> = Vec::new();
+    for (idx, url, handle) in handles {
+        if let Ok(true) = handle.await {
+            hits.push((idx, url));
+        }
+    }
+    hits.sort_by_key(|(idx, _)| *idx);
+    hits.into_iter().next().map(|(_, url)| url)
+}
+
+async fn reachable(url: String) -> bool {
+    let target = format!("{}/", url.trim_end_matches('/'));
+    match crate::net::get(&target, BOOT_PROBE_TIMEOUT, Some("text/html"), None).await {
+        Ok(r) => r.status().as_u16() < 400,
+        Err(_) => false,
+    }
 }
 
 /// 可达性探测（并发 6 条一组）。只报结果，不做自动切换。

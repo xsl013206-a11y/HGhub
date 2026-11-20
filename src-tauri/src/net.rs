@@ -85,6 +85,25 @@ pub fn bind_base(dir: &std::path::Path) {
     }
 }
 
+/// 启动自检：没有保存过线路时，自动挑一条可达线路写回 line.json。
+///
+/// 默认基址是固定线路 1（`huangguoai.com`），而大陆直连下两条固定线路都不通、
+/// 镜像却可直连。不在启动时自动挑选的话，首页会一直转圈且不给任何提示。
+/// 已经保存过任何非默认线路（含用户手动选的镜像）就完全不动，避免覆盖用户选择。
+pub fn auto_pick_line() -> bool {
+    let is_default = BASE
+        .read()
+        .map(|cur| cur.as_str() == DEFAULT_BASE)
+        .unwrap_or(true);
+    if !is_default {
+        return false;
+    }
+    match tauri::async_runtime::block_on(crate::lines::pick_reachable()) {
+        Some(url) => set_base(&url).is_ok(),
+        None => false,
+    }
+}
+
 /// 切换线路并落盘，返回规整后的地址。
 pub fn set_base(url: &str) -> Result<String, String> {
     let next = normalize_base(url)

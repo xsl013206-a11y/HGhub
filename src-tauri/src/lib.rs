@@ -57,6 +57,17 @@ pub fn run() {
                 let _ = std::fs::create_dir_all(&dir);
                 // 上次选择的线路（设置 → 线路）在启动时恢复
                 net::bind_base(&dir);
+                // 首次启动且没有保存过线路时，自动挑一条可达线路（大陆直连下固定线路必然不通）
+                if net::auto_pick_line() {
+                    // 已经切到可用线路：等 UI 起来后整页重载一次，避免它停在首屏的死请求上
+                    let handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                        if let Some(win) = handle.get_webview_window("main") {
+                            let _ = win.eval("window.location.reload()");
+                        }
+                    });
+                }
                 playback_log::bind(&dir);
                 let state: tauri::State<Api> = app.state();
                 state.session.bind(dir);

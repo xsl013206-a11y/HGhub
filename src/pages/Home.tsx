@@ -29,7 +29,9 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
     setLoading(true);
     setError("");
     try {
-      const res = await api.feed(p, 10);
+      // 页码防越界：上游分页是按 size 算的，拿错 size 的页数会把随机页推到空页上
+      const target = pagesRef.current && p > pagesRef.current ? pagesRef.current : p;
+      const res = await api.feed(target, 10);
       const list = res?.items || [];
       const pages = res?.pagination?.pages || 0;
       if (pages) pagesRef.current = pages;
@@ -39,15 +41,15 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
       });
 
       // 下一页：走到末页就回绕到第 1 页，绕回起始页才算刷完（重复项由上面的 id 去重挡住）
-      let next: number | null = p + 1;
-      if (pages && p >= pages) {
+      let next: number | null = target + 1;
+      if (pages && target >= pages) {
         if (!wrappedRef.current) {
           wrappedRef.current = true;
           next = 1;
-        } else if (p >= startRef.current - 1) {
+        } else if (target >= startRef.current - 1) {
           next = null;
         } else {
-          next = p + 1;
+          next = target + 1;
         }
       }
       if (!list.length) next = null;
@@ -63,7 +65,8 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
     }
   }, [done, toast]);
 
-  // 首屏：先用 size=1 探一次拿到总页数，再随机落地到某一页，
+  // 首屏：先探一次拿到总页数（必须用 size=10，和服务端分页口径一致——
+  // size=1 时服务端返回 pages=1824，会把随机页推到空页上），再随机落地到某一页，
   // 这样每次打开的第一条都不一样（上游固定排序，只能从页码上换入口）。
   useEffect(() => {
     if (bootedRef.current) return;
@@ -71,7 +74,7 @@ export default function Home({ active, bottomInset }: { active: boolean; bottomI
     void (async () => {
       let start = 1;
       try {
-        const probe = await api.feed(1, 1);
+        const probe = await api.feed(1, 10);
         const pages = probe?.pagination?.pages || 1;
         pagesRef.current = pages;
         start = pages > 1 ? 1 + Math.floor(Math.random() * pages) : 1;

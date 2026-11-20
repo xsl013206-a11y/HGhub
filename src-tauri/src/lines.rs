@@ -16,6 +16,17 @@ pub const FIXED: [(&str, &str); 2] = [
 const PUBLISH_PAGE: &str = "https://huangguoai.pages.dev/";
 /// 镜像列表上限（子域 × 域名是笛卡尔积，界面只展示这么多）
 const MIRROR_MAX: usize = 60;
+
+/// 发布页不可达时的内置镜像兜底（与 `publish.js` 手动同步）。
+///
+/// 大陆网络下 `huangguoai.pages.dev` 常被阻断，而镜像本身一般可直连；没有兜底时
+/// 「刷新镜像」必然超时，界面上一条可选线路都没有，用户只能一直卡在同样被阻断的
+/// 默认固定线路上，表现为「必须挂代理才能用」。
+const FALLBACK_DOMAINS: [&str; 2] = ["dvygahpw.cc", "zuxszoix.cc"];
+const FALLBACK_SUBS: [&str; 18] = [
+    "thu", "pku", "fdu", "sjtu", "zju", "nju", "xmu", "sysu", "whu", "jlu", "scu", "ruc", "bnu",
+    "nku", "tju", "sdu", "hust", "xjtu",
+];
 /// 单条线路探测超时
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -27,7 +38,46 @@ pub fn fixed() -> Value {
 }
 
 /// 拉地址发布页 → 解析 publish.js → 拼出镜像地址。只在用户点开「线路」时调用。
+///
+/// 发布页拉不到（大陆直连时的常态）就回落到内置清单，保证界面永远有可选项。
 pub async fn mirrors() -> Result<Value, String> {
+    match fetch_mirrors().await {
+        Ok(v) => Ok(v),
+        Err(err) => {
+            let items = builtin_mirrors();
+            if items.is_empty() {
+                return Err(err);
+            }
+            Ok(json!({
+                "source": "内置镜像清单",
+                "items": items,
+                "fallback": true,
+                "error": err,
+            }))
+        }
+    }
+}
+
+/// 内置清单展开成与发布页同形的 `[{ url, host }]`。
+fn builtin_mirrors() -> Vec<Value> {
+    let mut items: Vec<Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    'outer: for domain in FALLBACK_DOMAINS {
+        for sub in FALLBACK_SUBS {
+            let host = format!("{sub}.{domain}");
+            if !seen.insert(host.clone()) {
+                continue;
+            }
+            items.push(json!({ "url": format!("https://{host}"), "host": host }));
+            if items.len() >= MIRROR_MAX {
+                break 'outer;
+            }
+        }
+    }
+    items
+}
+
+async fn fetch_mirrors() -> Result<Value, String> {
     let html = get_text(PUBLISH_PAGE).await?;
     let js_rel = script_src(&html).unwrap_or_else(|| "publish.js".to_string());
     let js_url = absolute(PUBLISH_PAGE, &js_rel);
